@@ -4,7 +4,7 @@
 
 ;; Author: Jeff Holland <jeff.holland@gmail.com>
 ;; Maintainer: Jeff Holland <jeff.holland@gmail.com>
-;; Version: 0.4.0
+;; Version: 0.6.0
 ;; Package-Requires: ((emacs "28.1") (org "9.6") (transient "0.4"))
 ;; Keywords: convenience, productivity
 ;; URL: https://github.com/jeff-holland/tada-list
@@ -32,18 +32,24 @@
 ;; optional tags, and a date, and are stored as Org headings in a single
 ;; file (`tada-list-file').
 ;;
-;; v0.4 adds the browse buffer:
-;;   `tada-list'              — open the *Tada List* buffer.
-;;   `tada-list-visit-entry'  — jump from a row to the heading in the org file.
+;; v0.6 adds edit + delete in the browse buffer:
+;;   `tada-list-edit-entry'    (`e')  — re-prompts with existing values pre-filled.
+;;   `tada-list-delete-entry'  (`d')  — removes the entry after confirmation.
 ;;
-;; Capture commands:
-;;   `tada-list-add-quick' — title only, dated today.
-;;   `tada-list-add'       — full prompts (title, tags, date, description).
+;; Capture, browse, and filter:
+;;   `tada-list-add-quick'        — title only, dated today.
+;;   `tada-list-add'              — full prompts (title, tags, date, description).
+;;   `tada-list'                  — open the *Tada List* buffer.
+;;   `tada-list-visit-entry'      — jump from a row to the heading in the org file.
+;;   `tada-list-filter-by-tag'    (`t')
+;;   `tada-list-filter-by-range'  (`r')  — today / week / month / year / custom
+;;   `tada-list-clear-filters'    (`c')
 ;;
 ;; See PLAN.org for the v1.0 roadmap.
 
 ;;; Code:
 
+(require 'calendar)
 (require 'cl-lib)
 (require 'org)
 (require 'seq)
@@ -82,6 +88,17 @@ Each accomplishment is a level-1 Org heading."
   (with-current-buffer (find-file-noselect (tada-list--file))
     (mapcar #'car (org-get-buffer-tags))))
 
+(defun tada-list--insert-entry (title tags date description)
+  "Insert an entry's serialized form at point."
+  (insert "* " title)
+  (when tags
+    (insert " " (org-make-tag-string tags)))
+  (insert "\n[" date "]\n")
+  (when (and description (not (string-empty-p description)))
+    (insert description)
+    (unless (string-suffix-p "\n" description)
+      (insert "\n"))))
+
 (defun tada-list--append-entry (title tags date description)
   "Append an accomplishment to `tada-list-file'.
 TITLE is a non-empty string.  TAGS is a list of strings (or nil).
@@ -92,14 +109,34 @@ or nil)."
     (save-excursion
       (goto-char (point-max))
       (unless (bolp) (insert "\n"))
-      (insert "* " title)
-      (when tags
-        (insert " " (org-make-tag-string tags)))
-      (insert "\n[" date "]\n")
-      (when (and description (not (string-empty-p description)))
-        (insert description)
-        (unless (string-suffix-p "\n" description)
-          (insert "\n"))))
+      (tada-list--insert-entry title tags date description))
+    (save-buffer)))
+
+(defun tada-list--replace-entry (marker title tags date description)
+  "Replace the entry at MARKER with the supplied field values.
+Preserves the entry's position in the file."
+  (with-current-buffer (marker-buffer marker)
+    (save-excursion
+      (goto-char marker)
+      (let ((begin (point))
+            (end (save-excursion
+                   (outline-next-heading)
+                   (point))))
+        (delete-region begin end)
+        (goto-char begin)
+        (tada-list--insert-entry title tags date description)))
+    (save-buffer)))
+
+(defun tada-list--delete-entry-at-marker (marker)
+  "Delete the entry at MARKER from its file."
+  (with-current-buffer (marker-buffer marker)
+    (save-excursion
+      (goto-char marker)
+      (let ((begin (point))
+            (end (save-excursion
+                   (outline-next-heading)
+                   (point))))
+        (delete-region begin end)))
     (save-buffer)))
 
 
@@ -144,8 +181,9 @@ or nil)."
     (kill-buffer buf))
   (abort-recursive-edit))
 
-(defun tada-list--read-description ()
+(defun tada-list--read-description (&optional initial)
   "Prompt for an optional description in a popup buffer.
+If INITIAL is non-nil, pre-fill the buffer with it.
 Return the description string (possibly empty).  Signals quit if the
 user aborts."
   (setq tada-list--description-result nil
@@ -153,7 +191,9 @@ user aborts."
   (let ((buf (get-buffer-create "*tada-list description*")))
     (with-current-buffer buf
       (erase-buffer)
-      (tada-list-description-mode))
+      (when initial (insert initial))
+      (tada-list-description-mode)
+      (goto-char (point-min)))
     (pop-to-buffer buf)
     (recursive-edit))
   tada-list--description-result)
@@ -270,10 +310,65 @@ via `tabulated-list-get-id'."
                 (tada-list-entry-title entry)
                 (string-join (tada-list-entry-tags entry) ", "))))
 
+(defvar-local tada-list--filter-tag nil
+  "When non-nil, show only entries tagged with this string.")
+
+(defvar-local tada-list--filter-range nil
+  "When non-nil, a cons (START . END) of YYYY-MM-DD strings.
+Either bound may be nil for open-ended.")
+
+(defun tada-list--date<= (a b)
+  "Non-nil if A is lexically less than or equal to B."
+  (not (string< b a)))
+
+(defun tada-list--filter (entries)
+  "Apply active buffer-local filters to ENTRIES."
+  (let ((result entries))
+    (when tada-list--filter-tag
+      (setq result (seq-filter
+                    (lambda (e)
+                      (member tada-list--filter-tag
+                              (tada-list-entry-tags e)))
+                    result)))
+    (when tada-list--filter-range
+      (let ((start (car tada-list--filter-range))
+            (end (cdr tada-list--filter-range)))
+        (setq result (seq-filter
+                      (lambda (e)
+                        (let ((d (tada-list-entry-date e)))
+                          (and d
+                               (or (null start) (tada-list--date<= start d))
+                               (or (null end)   (tada-list--date<= d end)))))
+                      result))))
+    result))
+
 (defun tada-list--refresh ()
-  "Repopulate `tabulated-list-entries' from `tada-list-file'."
+  "Repopulate `tabulated-list-entries' from `tada-list-file', applying filters."
   (setq tabulated-list-entries
-        (mapcar #'tada-list--row (tada-list--parse-entries))))
+        (mapcar #'tada-list--row
+                (tada-list--filter (tada-list--parse-entries)))))
+
+(defun tada-list--update-mode-name ()
+  "Reflect active filters in the mode-line."
+  (let (parts)
+    (when tada-list--filter-tag
+      (push (format "tag:%s" tada-list--filter-tag) parts))
+    (when tada-list--filter-range
+      (push (format "%s..%s"
+                    (or (car tada-list--filter-range) "")
+                    (or (cdr tada-list--filter-range) ""))
+            parts))
+    (setq mode-name
+          (if parts
+              (format "Tada-List[%s]" (string-join (nreverse parts) " "))
+            "Tada-List"))
+    (force-mode-line-update)))
+
+(defun tada-list--reapply ()
+  "Re-parse, re-filter, redraw, and update the mode-line indicator."
+  (tada-list--refresh)
+  (tabulated-list-print t)
+  (tada-list--update-mode-name))
 
 (define-derived-mode tada-list-mode tabulated-list-mode "Tada-List"
   "Major mode for browsing accomplishments."
@@ -287,6 +382,127 @@ via `tabulated-list-get-id'."
   (tabulated-list-init-header))
 
 (define-key tada-list-mode-map (kbd "RET") #'tada-list-visit-entry)
+(define-key tada-list-mode-map (kbd "t")   #'tada-list-filter-by-tag)
+(define-key tada-list-mode-map (kbd "r")   #'tada-list-filter-by-range)
+(define-key tada-list-mode-map (kbd "c")   #'tada-list-clear-filters)
+(define-key tada-list-mode-map (kbd "e")   #'tada-list-edit-entry)
+(define-key tada-list-mode-map (kbd "d")   #'tada-list-delete-entry)
+
+
+;;;; Filter commands
+
+(defun tada-list--all-tags ()
+  "Return all tags currently used by parsed entries."
+  (delete-dups
+   (apply #'append
+          (mapcar #'tada-list-entry-tags (tada-list--parse-entries)))))
+
+(defun tada-list--week-range ()
+  "Return (START . END) date strings for the current week.
+Respects `calendar-week-start-day'."
+  (let* ((today (current-time))
+         (dow (nth 6 (decode-time today)))
+         (offset (mod (- dow calendar-week-start-day) 7))
+         (start (time-subtract today (days-to-time offset)))
+         (end (time-add start (days-to-time 6))))
+    (cons (format-time-string "%Y-%m-%d" start)
+          (format-time-string "%Y-%m-%d" end))))
+
+(defun tada-list--month-range ()
+  "Return (START . END) date strings for the current calendar month."
+  (let* ((now (decode-time))
+         (month (nth 4 now))
+         (year (nth 5 now))
+         (last (calendar-last-day-of-month month year)))
+    (cons (format "%04d-%02d-01" year month)
+          (format "%04d-%02d-%02d" year month last))))
+
+(defun tada-list--year-range ()
+  "Return (START . END) date strings for the current calendar year."
+  (let ((year (nth 5 (decode-time))))
+    (cons (format "%04d-01-01" year)
+          (format "%04d-12-31" year))))
+
+(defun tada-list-filter-by-tag (tag)
+  "Filter the browse buffer to entries tagged TAG."
+  (interactive
+   (let ((tags (tada-list--all-tags)))
+     (unless tags (user-error "No tags in use yet"))
+     (list (completing-read "Filter by tag: " tags nil t))))
+  (setq tada-list--filter-tag tag)
+  (tada-list--reapply))
+
+(defun tada-list-filter-by-range ()
+  "Filter the browse buffer to a date window or custom range."
+  (interactive)
+  (let ((choice (completing-read
+                 "Range: "
+                 '("today" "this-week" "this-month" "this-year" "custom")
+                 nil t)))
+    (setq tada-list--filter-range
+          (pcase choice
+            ("today" (let ((d (format-time-string "%Y-%m-%d")))
+                       (cons d d)))
+            ("this-week"  (tada-list--week-range))
+            ("this-month" (tada-list--month-range))
+            ("this-year"  (tada-list--year-range))
+            ("custom"     (cons (org-read-date) (org-read-date))))))
+  (tada-list--reapply))
+
+(defun tada-list-clear-filters ()
+  "Remove all active filters in the browse buffer."
+  (interactive)
+  (setq tada-list--filter-tag nil
+        tada-list--filter-range nil)
+  (tada-list--reapply))
+
+
+;;;; Edit and delete
+
+(defun tada-list--entry-at-point ()
+  "Return the entry under point, or signal a `user-error'."
+  (let ((entry (tabulated-list-get-id)))
+    (unless entry
+      (user-error "No entry at point"))
+    (let ((marker (tada-list-entry-marker entry)))
+      (unless (and marker (marker-buffer marker))
+        (user-error "Entry has no valid location; press `g' to refresh")))
+    entry))
+
+(defun tada-list-edit-entry ()
+  "Edit the entry under point.  Existing values are pre-filled in each prompt."
+  (interactive)
+  (let* ((entry (tada-list--entry-at-point))
+         (marker (tada-list-entry-marker entry))
+         (title (string-trim
+                 (read-string "Title: " (tada-list-entry-title entry)))))
+    (when (string-empty-p title)
+      (user-error "Title cannot be empty"))
+    (let* ((raw-tags (completing-read-multiple
+                      "Tags (comma-separated, RET to keep): "
+                      (tada-list--existing-tags)
+                      nil nil
+                      (string-join (tada-list-entry-tags entry) ",")))
+           (tags (seq-filter (lambda (s) (not (string-empty-p s)))
+                             (mapcar #'string-trim raw-tags)))
+           (date (org-read-date nil nil nil nil
+                                (tada-list-entry-date entry)))
+           (description (tada-list--read-description
+                         (tada-list-entry-description entry))))
+      (tada-list--replace-entry marker title tags date description)
+      (tada-list--reapply)
+      (message "Updated: %s" title))))
+
+(defun tada-list-delete-entry ()
+  "Delete the entry under point after confirmation."
+  (interactive)
+  (let* ((entry (tada-list--entry-at-point))
+         (title (tada-list-entry-title entry))
+         (marker (tada-list-entry-marker entry)))
+    (when (yes-or-no-p (format "Delete \"%s\"? " title))
+      (tada-list--delete-entry-at-marker marker)
+      (tada-list--reapply)
+      (message "Deleted: %s" title))))
 
 (defun tada-list-visit-entry ()
   "Open the tada-list file at the entry under point."
