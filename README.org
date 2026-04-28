@@ -1,0 +1,98 @@
+#+TITLE: tada-list
+#+OPTIONS: toc:nil
+
+The inverse of a to-do list: an Emacs package for recording and
+reviewing what you've /done/.
+
+Quick capture, browse / sort / filter by tag and date, all backed by a
+single plain-text Org file you own.
+
+* Why
+
+Reflecting on completed work counters the
+[[https://en.wikipedia.org/wiki/Zeigarnik_effect][Zeigarnik effect]] —
+the mental bias that keeps unfinished tasks loud and finished ones
+invisible. Whether you call it a /done list/, /ta-da list/, /brag
+document/, or /accomplishment journal/, the act of writing it down
+helps for motivation, performance reviews, résumé updates, and just
+remembering that you actually did things.
+
+* Install
+
+Not yet on MELPA. For now, clone and load:
+
+#+BEGIN_SRC emacs-lisp
+(add-to-list 'load-path "/path/to/tada-list")
+(require 'tada-list)
+#+END_SRC
+
+Or with =use-package=:
+
+#+BEGIN_SRC emacs-lisp
+(use-package tada-list
+  :load-path "/path/to/tada-list"
+  :commands (tada-list tada-list-add tada-list-add-quick tada-list-menu))
+#+END_SRC
+
+Requires Emacs 28.1+, Org 9.6+, Transient 0.4+.
+
+* The three commands you need
+
+| Command                  | What it does                                                  |
+|--------------------------+---------------------------------------------------------------|
+| =M-x tada-list-add-quick= | One prompt — type a title, it's logged with today's date.     |
+| =M-x tada-list=          | Open the browse buffer (sortable, filterable list).           |
+| =M-x tada-list-menu=     | Transient menu with every command — start here if in doubt.   |
+
+That's it. Bind any of them to a key in your config and you're set.
+
+* Browse buffer
+
+=M-x tada-list= opens =*Tada List*=, columns: Date | Title | Tags.
+Newest first. Active filters appear in the mode-line as
+=Tada-List[tag:work 2026-04-01..2026-04-30]=.
+
+| Key   | Action                                            |
+|-------+---------------------------------------------------|
+| =RET= | Visit the entry's heading in the org file         |
+| =g=   | Refresh from disk                                 |
+| =S=   | Sort by another column                            |
+| =t=   | Filter by tag                                     |
+| =r=   | Filter by date range (today / week / month / year / custom) |
+| =c=   | Clear all filters                                 |
+| =e=   | Edit entry under point                            |
+| =d=   | Delete entry under point (with confirmation)      |
+| =?=   | Open the transient menu                           |
+| =n=   | Next row (inherited from =tabulated-list-mode=)   |
+| =p=   | Previous row                                      |
+
+* Storage
+
+Entries live in a single Org file (=tada-list-file=, default
+=~/tada-list.org=). Each entry is a level-1 heading:
+
+#+BEGIN_EXAMPLE
+,* Shipped tada-list v1.0 :work:emacs:
+[2026-04-26]
+Got the transient menu landing and pushed to MELPA.
+Took longer than expected because of the date-range edge cases.
+#+END_EXAMPLE
+
+The format is plain Org, so you can edit the file directly with any
+tool, version-control it, sync it across machines, run org-agenda over
+it, etc. Nothing is locked into this package.
+
+* Customization
+
+#+BEGIN_SRC emacs-lisp
+(setq tada-list-file "~/notes/tada.org")  ; default: ~/tada-list.org
+#+END_SRC
+
+* Roadmap
+
+See =PLAN.org= for v1.0 acceptance criteria and post-v1.0 ideas
+(streaks, stats, end-of-day reminder hooks, multi-file, etc.).
+
+* License
+
+GPL-3.0-or-later.

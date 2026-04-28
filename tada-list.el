@@ -4,10 +4,10 @@
 
 ;; Author: Jeff Holland <jeff.holland@gmail.com>
 ;; Maintainer: Jeff Holland <jeff.holland@gmail.com>
-;; Version: 0.6.0
+;; Version: 0.7.0
 ;; Package-Requires: ((emacs "28.1") (org "9.6") (transient "0.4"))
 ;; Keywords: convenience, productivity
-;; URL: https://github.com/jeff-holland/tada-list
+;; URL: https://github.com/jholland82/tada-list
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is not part of GNU Emacs.
@@ -32,18 +32,25 @@
 ;; optional tags, and a date, and are stored as Org headings in a single
 ;; file (`tada-list-file').
 ;;
-;; v0.6 adds edit + delete in the browse buffer:
-;;   `tada-list-edit-entry'    (`e')  — re-prompts with existing values pre-filled.
-;;   `tada-list-delete-entry'  (`d')  — removes the entry after confirmation.
+;; v0.7 adds the discoverability layer:
+;;   `tada-list-menu'  (`?' in the browse buffer) — a transient menu
+;;   exposing every command, plus per-window filter shortcuts.
 ;;
-;; Capture, browse, and filter:
-;;   `tada-list-add-quick'        — title only, dated today.
-;;   `tada-list-add'              — full prompts (title, tags, date, description).
-;;   `tada-list'                  — open the *Tada List* buffer.
-;;   `tada-list-visit-entry'      — jump from a row to the heading in the org file.
-;;   `tada-list-filter-by-tag'    (`t')
-;;   `tada-list-filter-by-range'  (`r')  — today / week / month / year / custom
-;;   `tada-list-clear-filters'    (`c')
+;; Full command set:
+;;   `tada-list-add-quick'           — title only, dated today.
+;;   `tada-list-add'                 — full prompts (title, tags, date, description).
+;;   `tada-list'                     — open the *Tada List* buffer.
+;;   `tada-list-visit-entry'         — jump from a row to the heading.
+;;   `tada-list-filter-by-tag'       (`t')
+;;   `tada-list-filter-by-range'     (`r')  — today / week / month / year / custom
+;;   `tada-list-filter-today'        — same-day entries.
+;;   `tada-list-filter-this-week'    — current week (respects `calendar-week-start-day').
+;;   `tada-list-filter-this-month'   — current calendar month.
+;;   `tada-list-filter-this-year'    — current calendar year.
+;;   `tada-list-clear-filters'       (`c')
+;;   `tada-list-edit-entry'          (`e')
+;;   `tada-list-delete-entry'        (`d')
+;;   `tada-list-menu'                (`?')
 ;;
 ;; See PLAN.org for the v1.0 roadmap.
 
@@ -53,6 +60,7 @@
 (require 'cl-lib)
 (require 'org)
 (require 'seq)
+(require 'transient)
 
 (defgroup tada-list nil
   "Record and review personal accomplishments."
@@ -89,7 +97,10 @@ Each accomplishment is a level-1 Org heading."
     (mapcar #'car (org-get-buffer-tags))))
 
 (defun tada-list--insert-entry (title tags date description)
-  "Insert an entry's serialized form at point."
+  "Insert an entry's serialized form at point.
+TITLE is the heading text.  TAGS is a list of strings (or nil).
+DATE is a YYYY-MM-DD string.  DESCRIPTION is the body text (may be
+empty or nil)."
   (insert "* " title)
   (when tags
     (insert " " (org-make-tag-string tags)))
@@ -113,7 +124,7 @@ or nil)."
     (save-buffer)))
 
 (defun tada-list--replace-entry (marker title tags date description)
-  "Replace the entry at MARKER with the supplied field values.
+  "Replace the entry at MARKER with TITLE, TAGS, DATE, and DESCRIPTION.
 Preserves the entry's position in the file."
   (with-current-buffer (marker-buffer marker)
     (save-excursion
@@ -279,7 +290,8 @@ follows, trimmed."
 
 ;;;###autoload
 (defun tada-list-add ()
-  "Capture a new accomplishment with prompts for tags, date, and description."
+  "Capture a new accomplishment.
+Prompt for title, tags, date, and an optional description."
   (interactive)
   (let* ((title (string-trim (read-string "Accomplishment: ")))
          (_ (when (string-empty-p title)
@@ -387,6 +399,7 @@ Either bound may be nil for open-ended.")
 (define-key tada-list-mode-map (kbd "c")   #'tada-list-clear-filters)
 (define-key tada-list-mode-map (kbd "e")   #'tada-list-edit-entry)
 (define-key tada-list-mode-map (kbd "d")   #'tada-list-delete-entry)
+(define-key tada-list-mode-map (kbd "?")   #'tada-list-menu)
 
 
 ;;;; Filter commands
@@ -447,6 +460,31 @@ Respects `calendar-week-start-day'."
             ("this-month" (tada-list--month-range))
             ("this-year"  (tada-list--year-range))
             ("custom"     (cons (org-read-date) (org-read-date))))))
+  (tada-list--reapply))
+
+(defun tada-list-filter-today ()
+  "Filter the browse buffer to entries dated today."
+  (interactive)
+  (let ((today (format-time-string "%Y-%m-%d")))
+    (setq tada-list--filter-range (cons today today)))
+  (tada-list--reapply))
+
+(defun tada-list-filter-this-week ()
+  "Filter the browse buffer to entries from the current week."
+  (interactive)
+  (setq tada-list--filter-range (tada-list--week-range))
+  (tada-list--reapply))
+
+(defun tada-list-filter-this-month ()
+  "Filter the browse buffer to entries from the current calendar month."
+  (interactive)
+  (setq tada-list--filter-range (tada-list--month-range))
+  (tada-list--reapply))
+
+(defun tada-list-filter-this-year ()
+  "Filter the browse buffer to entries from the current calendar year."
+  (interactive)
+  (setq tada-list--filter-range (tada-list--year-range))
   (tada-list--reapply))
 
 (defun tada-list-clear-filters ()
@@ -513,7 +551,7 @@ Respects `calendar-week-start-day'."
       (user-error "Entry has no valid location; press `g' to refresh"))
     (pop-to-buffer (marker-buffer marker))
     (goto-char marker)
-    (org-show-entry)))
+    (org-fold-show-entry)))
 
 ;;;###autoload
 (defun tada-list ()
@@ -525,6 +563,30 @@ Respects `calendar-week-start-day'."
       (tada-list--refresh)
       (tabulated-list-print))
     (pop-to-buffer-same-window buf)))
+
+
+;;;; Transient menu
+
+;;;###autoload (autoload 'tada-list-menu "tada-list" nil t)
+(transient-define-prefix tada-list-menu ()
+  "Tada-list main menu."
+  ["Capture"
+   ("a" "Add (full prompts)"     tada-list-add)
+   ("A" "Quick add (title only)" tada-list-add-quick)]
+  ["Browse"
+   ("l" "Open list"          tada-list)
+   ("v" "Visit entry"        tada-list-visit-entry)]
+  ["Filter"
+   ("t" "By tag"             tada-list-filter-by-tag)
+   ("r" "By range…"          tada-list-filter-by-range)
+   ("T" "Today"              tada-list-filter-today)
+   ("W" "This week"          tada-list-filter-this-week)
+   ("M" "This month"         tada-list-filter-this-month)
+   ("Y" "This year"          tada-list-filter-this-year)
+   ("c" "Clear filters"      tada-list-clear-filters)]
+  ["Edit"
+   ("e" "Edit entry"         tada-list-edit-entry)
+   ("d" "Delete entry"       tada-list-delete-entry)])
 
 (provide 'tada-list)
 ;;; tada-list.el ends here
